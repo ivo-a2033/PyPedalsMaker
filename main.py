@@ -56,8 +56,8 @@ def generate_next_audio_chunk():
     data = sink.get_data(CHUNK_SIZE)
     data = np.clip(data, -1.0, 1.0)
     mono = (data * 32767).astype(np.int16)
-    stereo = np.column_stack((mono, mono))
-    return pg.sndarray.make_sound(stereo)
+    #stereo = np.column_stack((mono, mono))
+    return pg.sndarray.make_sound(mono)
 
 
 wire_start = None
@@ -104,11 +104,17 @@ def connect(a, b):
     if creates_cycle(a.owner, b.owner):
         return
 
+    if a.owner.out != None:
+        a.owner.out.in_ = None
+    if b.owner.in_ != None:
+        b.owner.in_.out = None
+
     a.owner.out = b.owner
     b.owner.in_ = a.owner
 
 
 run = True
+clock = pg.time.Clock()
 
 while run:
     display.fill((25, 25, 25))
@@ -142,6 +148,9 @@ while run:
         else:
             audio_channel.queue(chunk)
 
+    for node in nodes:
+        node.draw(display)
+
     # For now, draw the wire being dragged.
     if wire_start:
         pg.draw.line(
@@ -151,9 +160,6 @@ while run:
             pg.mouse.get_pos(),
             3,
         )
-
-    for node in nodes:
-        node.draw(display)
 
     for node in nodes:
         if node.out:
@@ -166,5 +172,5 @@ while run:
             )
 
     pg.display.flip()
-
+    clock.tick(120)
 pg.quit()

@@ -68,6 +68,8 @@ class Terminal:
         return self.pos.distance_to(pos) <= 16
 
     def draw(self, surface):
+        if self.contains(pg.mouse.get_pos()):
+            pg.draw.circle(surface, (180, 180, 180), self.pos, 16, 2)
         pg.draw.circle(surface, (180, 180, 180), self.pos, 6)
 
 
