@@ -60,6 +60,12 @@ class Knob(Button):
     def update(self, event):
         if event.type == pg.MOUSEWHEEL and self.rect.collidepoint(pg.mouse.get_pos()):
             self.value = min(self.max_value, max(self.min_value, self.value + event.y * self.step))
+        if event.type == pg.KEYDOWN and self.rect.collidepoint(pg.mouse.get_pos()):
+            if event.key == pg.K_DOWN:
+                self.value = min(self.max_value, max(self.min_value, self.value - 2 * self.step))
+            if event.key == pg.K_UP:
+                self.value = min(self.max_value, max(self.min_value, self.value + 2 * self.step))
+
 
     def draw(self, surface):
         center = self.rect.center

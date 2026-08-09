@@ -1,5 +1,6 @@
 import pygame as pg
 import numpy as np
+
 from UI import Generator, Pedal, Sink
 
 
@@ -27,7 +28,7 @@ def sine_source(phase, num_samples):
 
 def distortion(data, knobs):
     threshold = 1.1 - knobs["gain"].value
-    return np.clip(data, -threshold, threshold)
+    return np.clip(data, -threshold, threshold) * (1+knobs["gain"].value*9)
 
 # Reverb has no func yet, so the pedal is a no-op passthrough until
 # it's implemented (bypass behavior when func is None or disabled).
@@ -38,6 +39,7 @@ def distortion(data, knobs):
 generator = Generator((60, 260, 160, 120), "OSC", func=sine_source)
 
 pedals = [
+    Pedal((300, 60, 220, 120), "PITCH SHIFT", distortion, knobs={"gain": (0.0, 1.0, 1.0)}),
     Pedal((300, 260, 220, 120), "DISTORTION", distortion, knobs={"gain": (0.0, 1.0, 1.0)}),
     Pedal((600, 260, 220, 120), "REVERB"),
 ]
@@ -57,7 +59,7 @@ def generate_next_audio_chunk():
     data = np.clip(data, -1.0, 1.0)
     mono = (data * 32767).astype(np.int16)
     #stereo = np.column_stack((mono, mono))
-    return pg.sndarray.make_sound(mono)
+    return pg.sndarray.make_sound(mono), data
 
 
 wire_start = None
@@ -92,6 +94,8 @@ def connect(a, b):
 
 run = True
 clock = pg.time.Clock()
+data = np.zeros(CHUNK_SIZE)
+waveform_max = 100
 
 while run:
     display.fill((25, 25, 25))
@@ -144,7 +148,7 @@ while run:
             node.update(e)
 
     if not audio_channel.get_queue():
-        chunk = generate_next_audio_chunk()
+        chunk, data = generate_next_audio_chunk()
         if not audio_channel.get_busy():
             audio_channel.play(chunk)
         else:
@@ -173,6 +177,24 @@ while run:
                     other.pos,
                     3,
                 )
+
+    # waveform draw
+    for n,i in enumerate(data[1:]):
+        p1 = (n-1,620 - int(data[n-1]*waveform_max))
+        p2 = (n,620 - int(i*waveform_max))
+        pg.draw.line(display, (155,155,255), p1, p2, 2)
+
+    # freq domain draw
+    fft_output = np.fft.fft(data)
+    freqs = np.fft.fftfreq(len(data), d=1/SAMPLE_RATE)
+    magnitude = np.abs(fft_output)
+    pos_mask = freqs >= 0 # no need for neg freqs
+
+    pos_freqs = freqs[pos_mask]
+    pos_magnitude = magnitude[pos_mask]
+
+    for n,i in enumerate(pos_freqs):
+        pg.draw.line(display, (155,155,255), (n+720,720), (n+720,720-int(pos_magnitude[n])), 1)
 
     pg.display.flip()
     clock.tick(120)
