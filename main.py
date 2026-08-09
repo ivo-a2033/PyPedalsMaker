@@ -25,9 +25,9 @@ def sine_source(phase, num_samples):
     return np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
 
 
-def distortion(data):
-    return np.tanh(data * 5.0).astype(np.float32) * 0.6
-
+def distortion(data, knobs):
+    threshold = 1.1 - knobs["gain"].value
+    return np.clip(data, -threshold, threshold)
 
 # Reverb has no func yet, so the pedal is a no-op passthrough until
 # it's implemented (bypass behavior when func is None or disabled).
@@ -38,7 +38,7 @@ def distortion(data):
 generator = Generator((60, 260, 160, 120), "OSC", func=sine_source)
 
 pedals = [
-    Pedal((300, 260, 220, 120), "DISTORTION", distortion),
+    Pedal((300, 260, 220, 120), "DISTORTION", distortion, knobs={"gain": (0.0, 1.0, 1.0)}),
     Pedal((600, 260, 220, 120), "REVERB"),
 ]
 
@@ -61,6 +61,7 @@ def generate_next_audio_chunk():
 
 
 wire_start = None
+cut_pos = None
 
 
 def get_terminal(pos):
@@ -71,21 +72,6 @@ def get_terminal(pos):
             return terminal
 
     return None
-
-
-def creates_cycle(source_owner, sink_owner):
-    """True if connecting source_owner -> sink_owner would close a loop
-    (i.e. sink_owner is already upstream of source_owner). The pull
-    model recurses via in_, so a cycle here means infinite recursion."""
-    node = source_owner
-
-    while node is not None:
-        if node is sink_owner:
-            return True
-
-        node = node.in_
-
-    return False
 
 
 def connect(a, b):
@@ -100,17 +86,8 @@ def connect(a, b):
     if a.owner is b.owner:
         return
 
-    # Don't create a loop the pull recursion can't terminate on.
-    if creates_cycle(a.owner, b.owner):
-        return
-
-    if a.owner.out != None:
-        a.owner.out.in_ = None
-    if b.owner.in_ != None:
-        b.owner.in_.out = None
-
-    a.owner.out = b.owner
-    b.owner.in_ = a.owner
+    a.connections.append(b)
+    b.connections.append(a)
 
 
 run = True
@@ -138,6 +115,31 @@ while run:
 
                 wire_start = None
 
+        if e.type == pg.MOUSEBUTTONDOWN and e.button == 3:
+            cut_pos = e.pos
+
+        elif e.type == pg.MOUSEBUTTONUP and e.button == 3:
+            cut_pos = None
+
+        elif e.type == pg.MOUSEMOTION and cut_pos:
+            p1, p2 = pg.Vector2(cut_pos), pg.Vector2(e.pos)
+
+            for node in nodes:
+                if node.out_terminal:
+                    for other in list(node.out_terminal.connections):
+                        p3, p4 = node.out_terminal.pos, other.pos
+
+                        d1 = (p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)
+                        d2 = (p4.x - p3.x) * (p2.y - p3.y) - (p4.y - p3.y) * (p2.x - p3.x)
+                        d3 = (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
+                        d4 = (p2.x - p1.x) * (p4.y - p1.y) - (p2.y - p1.y) * (p4.x - p1.x)
+
+                        if d1 * d2 < 0 and d3 * d4 < 0:
+                            node.out_terminal.connections.remove(other)
+                            other.connections.remove(node.out_terminal)
+
+            cut_pos = e.pos
+
         for node in nodes:
             node.update(e)
 
@@ -162,14 +164,15 @@ while run:
         )
 
     for node in nodes:
-        if node.out:
-            pg.draw.line(
-                display,
-                (180, 180, 180),
-                node.out_terminal.pos,
-                node.out.in_terminal.pos,
-                3,
-            )
+        if node.out_terminal:
+            for other in node.out_terminal.connections:
+                pg.draw.line(
+                    display,
+                    (180, 180, 180),
+                    node.out_terminal.pos,
+                    other.pos,
+                    3,
+                )
 
     pg.display.flip()
     clock.tick(120)

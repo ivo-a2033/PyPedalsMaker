@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pygame as pg
 
@@ -44,12 +45,49 @@ class Button:
             surface.blit(text, text_rect)
 
 
+class Knob(Button):
+    """A glorified Button: no click action, its value is set by scrolling
+    the mouse wheel while hovering over it."""
+
+    def __init__(self, rect, label="", value=0.5, min_value=0.0, max_value=1.0, step=0.05):
+        super().__init__(rect, func=lambda: None, label=label)
+        self.value = value
+        self.min_value = min_value
+        self.max_value = max_value
+        self.step = step
+        self.hover_font = pg.font.Font(None, 22)
+
+    def update(self, event):
+        if event.type == pg.MOUSEWHEEL and self.rect.collidepoint(pg.mouse.get_pos()):
+            self.value = min(self.max_value, max(self.min_value, self.value + event.y * self.step))
+
+    def draw(self, surface):
+        center = self.rect.center
+        radius = min(self.rect.width, self.rect.height) // 2
+        hovered = self.rect.collidepoint(pg.mouse.get_pos())
+
+        if hovered:
+            pg.draw.circle(surface, (180, 180, 180), center, radius + 8, 1)
+
+        pg.draw.circle(surface, self.color, center, radius)
+
+        t = (self.value - self.min_value) / (self.max_value - self.min_value)
+        angle = math.radians(-135 + 270 * t)
+        tip = (center[0] + radius * math.sin(angle), center[1] - radius * math.cos(angle))
+        pg.draw.line(surface, (255, 255, 255), center, tip, 2)
+
+        if hovered:
+            text = self.hover_font.render(f"{self.label} {self.value:.2f}", True, (255, 255, 255))
+            surface.blit(text, text.get_rect(center=(center[0], center[1] + radius + 16)))
+
+
 class Terminal:
     """A connection point on a GraphNode (an in_ or out socket)."""
 
     def __init__(self, owner, kind):
         self.owner = owner
         self.kind = kind  # "in" or "out"
+        self.connections = []
 
     @property
     def pos(self):
@@ -79,8 +117,9 @@ class GraphNode:
     be dragged around: sources, effects, and the final output.
 
     Audio flows via `get_data(num_samples)`: a node PULLS its input by
-    calling `self.in_.get_data(num_samples)` (if it has an upstream
-    node), does whatever it does to that data, and returns the result.
+    calling `get_data(num_samples)` on every node connected to its
+    in_terminal and summing the results, does whatever it does to
+    that data, and returns the result.
     A source node overrides this to generate instead of pulling. A
     sink just pulls and hands the result off to the audio backend.
     This is called once per audio chunk, from the sink end, and the
@@ -99,10 +138,6 @@ class GraphNode:
         # (a Generator has no in_terminal, a Sink has no out_terminal).
         self.in_terminal = None
         self.out_terminal = None
-
-        # Graph links to adjacent nodes (or None if unconnected).
-        self.in_ = None
-        self.out = None
 
     def terminal_at(self, pos):
         for terminal in (self.in_terminal, self.out_terminal):
@@ -144,8 +179,8 @@ class GraphNode:
         Sources (Generator) override this to generate instead of
         pulling. Effects (Pedal) override it to process what they pull.
         """
-        if self.in_ is not None:
-            return self.in_.get_data(num_samples)
+        if self.in_terminal and self.in_terminal.connections:
+            return sum(t.owner.get_data(num_samples) for t in self.in_terminal.connections)
 
         return np.zeros(num_samples, dtype=np.float32)
 
@@ -248,7 +283,7 @@ class Pedal(GraphNode):
         enabled: Whether the effect is applied (False = bypass).
     """
 
-    def __init__(self, rect, label="", func=None):
+    def __init__(self, rect, label="", func=None, knobs=None):
         super().__init__(rect, label)
 
         self.func = func
@@ -261,6 +296,12 @@ class Pedal(GraphNode):
             color=(60, 100, 60),
             pressed_color=(100, 160, 100),
         )
+
+        # knobs: {name: (min_value, default_value, max_value)}
+        self.knobs = {
+            name: Knob((0, 0, 60, 24), name, default, lo, hi)
+            for name, (lo, default, hi) in (knobs or {}).items()
+        }
 
         self.in_terminal = Terminal(self, "in")
         self.out_terminal = Terminal(self, "out")
@@ -276,18 +317,24 @@ class Pedal(GraphNode):
             self.rect.bottom - 40,
         )
 
+        for i, knob in enumerate(self.knobs.values()):
+            knob.rect.topleft = (self.rect.left + 10, self.rect.top + 40 + i * 26)
+
     def update(self, event):
         self.handle_drag(event)
         self.on_button.update(event)
 
+        for knob in self.knobs.values():
+            knob.update(event)
+
     def get_data(self, num_samples):
-        if self.in_ is not None:
-            data = self.in_.get_data(num_samples)
+        if self.in_terminal.connections:
+            data = sum(t.owner.get_data(num_samples) for t in self.in_terminal.connections)
         else:
             data = np.zeros(num_samples, dtype=np.float32)
 
         if self.enabled and self.func:
-            data = self.func(data)
+            data = self.func(data, self.knobs) if self.knobs else self.func(data)
 
         return data
 
@@ -297,6 +344,9 @@ class Pedal(GraphNode):
 
         self.draw_label_and_terminals(surface)
         self.on_button.draw(surface)
+
+        for knob in self.knobs.values():
+            knob.draw(surface)
 
         pos = pg.Vector2(self.rect.right - 10, self.rect.top + 10)
         color = (100, 255, 100) if self.enabled else (0, 25, 0)
