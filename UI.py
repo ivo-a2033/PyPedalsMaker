@@ -304,10 +304,22 @@ class Pedal(GraphNode):
         )
 
         # knobs: {name: (min_value, default_value, max_value)}
-        self.knobs = {
-            name: Knob((0, 0, 60, 24), name, default, lo, hi)
-            for name, (lo, default, hi) in (knobs or {}).items()
-        }
+        # or optionally: {name: (min, default, max, step)} where `step`
+        # controls how much the knob moves for each wheel tick.
+        self.knobs = {}
+        for name, params in (knobs or {}).items():
+            try:
+                # accept (lo, default, hi) or (lo, default, hi, step)
+                if len(params) == 3:
+                    lo, default, hi = params
+                    step = 0.05
+                else:
+                    lo, default, hi, step = params
+            except Exception:
+                # fallback to sensible defaults if the user passed something odd
+                lo, default, hi, step = 0.0, 0.5, 1.0, 0.05
+
+            self.knobs[name] = Knob((0, 0, 60, 24), name, default, lo, hi, step)
 
         self.in_terminal = Terminal(self, "in")
         self.out_terminal = Terminal(self, "out")

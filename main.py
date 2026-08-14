@@ -1,9 +1,11 @@
 import pygame as pg
 import numpy as np
 from scipy.io import wavfile
+import glob
+import os
 
 from UI import Generator, Pedal, Sink
-
+from pedal_functions import *
 
 SAMPLE_RATE = 48000
 CHUNK_SIZE = 512
@@ -17,9 +19,40 @@ display = pg.display.set_mode((WIDTH, HEIGHT))
 
 audio_channel = pg.mixer.Channel(0)
 
-# importing a file for testing
-sample_rate, wav_data = wavfile.read("guitar1.wav")
-wav_data = wav_data.astype(np.float32) / np.max(np.abs(wav_data))
+# --- WAV list setup --------------------------------------------------
+# collect all .wav files in the working directory
+wav_files = sorted(glob.glob("*.wav"))
+if not wav_files and os.path.exists("emo.wav"):
+    wav_files = ["emo.wav"]
+
+# load wav files into memory (simple normalisation, first channel)
+wav_datas = []
+for p in wav_files:
+    try:
+        sr, d = wavfile.read(p)
+    except Exception:
+        continue
+
+    # take first channel if stereo
+    if d.ndim > 1:
+        d = d[:, 0]
+
+    d = d.astype(np.float32)
+    maxv = np.max(np.abs(d))
+    if maxv > 0:
+        d = d / maxv
+
+    wav_datas.append(d)
+
+# fallback: if nothing was found, create a silent buffer
+if not wav_datas:
+    wav_datas = [np.zeros(48000, dtype=np.float32)]
+    wav_files = ["(silent)"]
+
+current_wav_index = 0
+
+def current_wav_name():
+    return os.path.basename(wav_files[current_wav_index])
 
 # --- DSP functions -----------------------------------------------------
 # Generators are called as func(phase, num_samples) -> float32[-1, 1].
@@ -30,193 +63,103 @@ def sine_source(phase, num_samples):
     return np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
 
 def get_wav(pos, num_samples):
-    pos = int(pos) % len(wav_data)
+    data = wav_datas[current_wav_index]
+    if data is None or len(data) == 0:
+        return np.zeros(num_samples, dtype=np.float32)
+
+    pos = int(pos) % len(data)
     end = pos + num_samples
 
-    if end <= len(wav_data):
-        chunk = wav_data[pos:end]
+    if end <= len(data):
+        chunk = data[pos:end]
     else:
-        # wraps past the end -> stitch the tail + the head together
-        first_part = wav_data[pos:]
+        first_part = data[pos:]
         remaining = num_samples - len(first_part)
-        second_part = wav_data[:remaining]
+        second_part = data[:remaining]
         chunk = np.concatenate([first_part, second_part])
 
-    if chunk.ndim > 1:
-        chunk = chunk[:, 0]
+    return chunk.astype(np.float32)
 
-    return chunk.astype(np.float32) 
-
-
-def distortion(data, knobs):
-    data = data * (1+knobs["gain"].value*90)
-    return np.clip(data, -1, 1) 
-
-def overdrive(x, knobs):
-    x = x * (1+knobs["gain"].value*90)
-    return np.tanh(x)
-
-def fuzz(x, knobs):
-    x = x * (1+knobs["gain"].value*90)
-    return np.sign(x) * (1 - np.exp(-np.abs(x)))
-
-def fuzz2(x, knobs):
-    x = x * (1+knobs["gain"].value*90)
-    return x/ (1 + abs(x))
-
-def diode_clip(x, knobs):
-    x =  x * (1+knobs["gain"].value*90)
-    vt, vth = knobs["vt"].value, knobs["vth"].value
-    # vt = "knee softness", vth = voltage where it starts clipping hard
-    ax = np.abs(x)
-    lin = ax < vth - vt
-    quad = (ax >= vth - vt) & (ax < vth + vt)
-    hard = ax >= vth + vt
-
-    out = np.zeros_like(x)
-    out[lin] = x[lin]
-    # quadratic knee region
-    sign = np.sign(x[quad])
-    out[quad] = sign * (ax[quad] - (ax[quad] - (vth - vt))**2 / (4*vt))
-    out[hard] = np.sign(x[hard]) * vth
-
-    return out
-
-def pitch_shift(x, knobs):
-    return abs(x)
-
-GRAIN_SIZE = 1024
-HISTORY_SIZE = 2048
-pitch_history = np.zeros(HISTORY_SIZE, dtype=np.float32)
-
-def better_pitch_shift(data, knobs):
-    global pitch_history
-
-    ratio = 0.5 + knobs["shift"].value * 1.5  # 0.5x (down) to 2x (up)
-
-    if not hasattr(better_pitch_shift, "read_pos"):
-        better_pitch_shift.read_pos = 0.0
-
-    buf = np.concatenate([pitch_history, data])
-    H = len(pitch_history)
-    g = GRAIN_SIZE
-    out = np.zeros(len(data), dtype=np.float32)
-
-    for i in range(len(data)):
-        write_idx = H + i
-
-        r1 = better_pitch_shift.read_pos % g
-        r2 = (r1 + g / 2) % g
-
-        idx1 = int(np.clip(write_idx - g + r1, 0, len(buf) - 1))
-        idx2 = int(np.clip(write_idx - g + r2, 0, len(buf) - 1))
-
-        w1 = 0.5 - 0.5 * np.cos(2 * np.pi * r1 / g)
-        w2 = 0.5 - 0.5 * np.cos(2 * np.pi * r2 / g)
-
-        out[i] = buf[idx1] * w1 + buf[idx2] * w2
-        better_pitch_shift.read_pos += ratio
-
-    # update history: append this chunk's dry input, keep last HISTORY_SIZE samples
-    pitch_history = np.concatenate([pitch_history, data])[-HISTORY_SIZE:]
-
-    return out.astype(np.float32)
-
-PSOLA_HISTORY_SIZE = 4096
-psola_history = np.zeros(PSOLA_HISTORY_SIZE, dtype=np.float32)
-
-
-def estimate_pitch_period(buf, sr, fmin=70, fmax=800): # helper function to psola
-    """Autocorrelation pitch period estimate, in samples. Returns None if unvoiced/noisy."""
-    min_lag = int(sr / fmax)
-    max_lag = int(sr / fmin)
-    max_lag = min(max_lag, len(buf) - 1)
-    if max_lag <= min_lag:
-        return None
-
-    seg = buf[-max_lag * 3:] if len(buf) > max_lag * 3 else buf
-    seg = seg - np.mean(seg)
-
-    corr = np.correlate(seg, seg, mode="full")
-    mid = len(corr) // 2
-    corr = corr[mid:mid + max_lag + 1]
-
-    if corr[0] <= 1e-8:
-        return None  # near-silence
-
-    corr_norm = corr / corr[0]
-    window = corr_norm[min_lag:max_lag + 1]
-    if len(window) == 0:
-        return None
-
-    peak_idx = int(np.argmax(window))
-    peak_val = window[peak_idx]
-
-    if peak_val < 0.3:
-        return None  # too noisy/inharmonic to trust (e.g. after heavy distortion)
-
-    return min_lag + peak_idx
-
-
-def td_psola_pitch_shift(data, knobs, sr=48000):
-    global psola_history
-
-    ratio = 0.5 + knobs["shift"].value * 1.5  # 0.5x (down) to 2x (up)
-
-    if not hasattr(td_psola_pitch_shift, "period"):
-        td_psola_pitch_shift.period = int(sr / 150)  # fallback guess, ~150Hz
-    if not hasattr(td_psola_pitch_shift, "read_pos"):
-        td_psola_pitch_shift.read_pos = float(len(psola_history))
-
-    # Estimate this chunk's pitch period from history (causal, no lookahead into `data`)
-    detected = estimate_pitch_period(psola_history, sr)
-    if detected is not None:
-        detected = int(np.clip(detected, sr // 800, sr // 70))
-        # smooth so period doesn't jump wildly chunk to chunk
-        td_psola_pitch_shift.period = int(0.7 * td_psola_pitch_shift.period + 0.3 * detected)
-
-    T = max(td_psola_pitch_shift.period, 32)
-    grain = 2 * T  # PSOLA convention: window spans ~2 pitch periods
-
-    buf = np.concatenate([psola_history, data]).astype(np.float32)
-    H = len(psola_history)
-    out = np.zeros(len(data), dtype=np.float32)
-
-    for i in range(len(data)):
-        write_idx = H + i
-        rp = td_psola_pitch_shift.read_pos
-
-        r1 = rp % grain
-        r2 = (r1 + grain / 2) % grain  # second tap, one pitch period out of phase
-
-        idx1 = int(np.clip(write_idx - grain + r1, 0, len(buf) - 1))
-        idx2 = int(np.clip(write_idx - grain + r2, 0, len(buf) - 1))
-
-        w1 = 0.5 - 0.5 * np.cos(2 * np.pi * r1 / grain)
-        w2 = 0.5 - 0.5 * np.cos(2 * np.pi * r2 / grain)
-
-        out[i] = buf[idx1] * w1 + buf[idx2] * w2
-        td_psola_pitch_shift.read_pos += ratio
-
-    psola_history = np.concatenate([psola_history, data])[-PSOLA_HISTORY_SIZE:]
-    return out.astype(np.float32)
 
 # --- Graph ---------------------------------------------------------------
 
-generator = Generator((60, 260, 160, 120), "OSC", func=get_wav)
+generator = Generator((60, 260, 160, 120), f"OSC ({current_wav_name()})", func=get_wav)
 
 pedals = [
     Pedal((300, 60, 220, 120), "OVERDRIVE", overdrive, knobs={"gain": (0.0, 1.0, 1.0)}),
     Pedal((300, 460, 220, 120), "FUZZ", fuzz2, knobs={"gain": (0.0, 1.0, 1.0)}),
-    Pedal((500, 460, 220, 120), "PITCH SHIFT", td_psola_pitch_shift, knobs={"shift": (0.0, 1.0, 1.0)}),
+    Pedal((600, 460, 220, 120), "PITCH SHIFT", td_psola_pitch_shift, knobs={"shift": (0.0, 1.0, 1.0)}),
     Pedal((300, 260, 220, 120), "DISTORTION", distortion, knobs={"gain": (0.0, 1.0, 1.0)}),
-    Pedal((600, 260, 220, 120), "REVERB"),
+    Pedal((600, 260, 220, 120), "FUZZ GATE", fuzz_gate, knobs={"gate_thresh": (0.01, 0.05, 0.2), "gate_speed": (0, 1, 5)}),
 ]
 
 sink = Sink((900, 260, 140, 120), "OUT")
 
 # Everything that needs events/drawing/terminal lookups, source to sink.
-nodes = [generator, *pedals, sink]
+nodes = [generator, sink]
+
+# --- Spawnable pedals -------------------------------------------------
+# list of (display name, function, knobs mapping or None)
+spawnable_defs = [
+    ("OVERDRIVE", overdrive, {"gain": (0.0, 1.0, 1.0)}),
+    ("FUZZ", fuzz2, {"gain": (0.0, 1.0, 1.0)}),
+    ("FUZZ_SOFT", fuzz, {"gain": (0.0, 1.0, 1.0)}),
+    ("DISTORTION", distortion, {"gain": (0.0, 1.0, 1.0)}),
+    ("FUZZ_GATE", fuzz_gate, {"gate_thresh": (0.01, 0.05, 0.2), "gate_speed": (0, 1, 5)}),
+    ("DIODE_CLIP", diode_clip, {"gain": (0.0, 1.0, 1.0), "vt": (0.001, 0.05, 0.5), "vth": (0.05, 0.5, 1.0)}),
+    ("PITCH_PSOLA", td_psola_pitch_shift, {"shift": (0.0, 1.0, 1.0)}),
+    ("PITCH_GRAIN", better_pitch_shift, {"shift": (0.0, 1.0, 1.0)}),
+    ("PITCH_SIMPLE", pitch_shift, {"shift": (0.0, 1.0, 5.0 , 1.0)}),
+    ("LOWPASS", low_pass, {"cutoff": (0.0, 0.5, 1.0)}),
+    ("REVERB", reverb, {"delay": (0.0, 0.0, 1.0)}),
+]
+
+# spawn counts and top-bar buttons (max 2 per pedal type)
+spawn_counts = {name: 0 for name, _, _ in spawnable_defs}
+top_buttons = []
+
+def spawn_pedal(name):
+    # enforce max 2 per type
+    if spawn_counts.get(name, 0) >= 5:
+        return
+
+    # find definition
+    for n, func, knobs in spawnable_defs:
+        if n == name:
+            mx, my = pg.mouse.get_pos()
+            # create pedal rect located below the mouse
+            x = max(0, mx - 110)
+            y = min(HEIGHT - 140, my + 10)
+            new_p = Pedal((x, y, 220, 120), name, func, knobs=knobs)
+
+            # add to pedals and nodes (before sink)
+            pedals.append(new_p)
+            # insert before sink so sink stays last
+            try:
+                sink_index = nodes.index(sink)
+                nodes.insert(sink_index, new_p)
+            except ValueError:
+                nodes.append(new_p)
+
+            spawn_counts[name] = spawn_counts.get(name, 0) + 1
+            # update button label to show count
+            for btn in top_buttons:
+                if btn.label.startswith(name):
+                    btn.label = f"{name} ({spawn_counts[name]}/5)"
+            return
+
+# create top buttons (wrap to next row if needed)
+for i, (name, _, _) in enumerate(spawnable_defs):
+    per_row = max(1, WIDTH // 110)
+    row = i // per_row
+    col = i % per_row
+    bx = 10 + col * 110
+    by = 10 + row * 40
+    b = Generator.__module__ and None
+    # use UI.Button class imported via Generator import
+    from UI import Button as _Button
+    btn = _Button((bx, by, 100, 30), func=(lambda n=name: spawn_pedal(n)), label=f"{name} (0/5)")
+    top_buttons.append(btn)
 
 def generate_next_audio_chunk():
     data = sink.get_data(CHUNK_SIZE)
@@ -313,6 +256,22 @@ while run:
 
             cut_pos = e.pos
 
+        # cycle WAV when clicking the OSC area (left click release)
+        if e.type == pg.MOUSEBUTTONUP and e.button == 1:
+            if generator.rect.collidepoint(e.pos) and not generator.terminal_at(e.pos) and not generator.on_button.rect.collidepoint(e.pos):
+                current_wav_index = (current_wav_index + 1) % len(wav_datas)
+                generator.label = f"OSC ({current_wav_name()})"
+                generator.phase = 0
+
+        # reset current wav position to start on 'R'
+        if e.type == pg.KEYDOWN:
+            if e.key == pg.K_r:
+                generator.phase = 0
+
+        # update top-bar spawn buttons
+        for btn in top_buttons:
+            btn.update(e)
+
         for node in nodes:
             node.update(e)
 
@@ -325,6 +284,27 @@ while run:
 
     for node in nodes:
         node.draw(display)
+
+    # draw generator progress bar (for wav playback)
+    try:
+        data_len = len(wav_datas[current_wav_index])
+    except Exception:
+        data_len = 0
+
+    if data_len > 0:
+        pos = int(generator.phase) % data_len
+        pct = pos / data_len
+
+        gb = generator.rect
+        bar_height = 8
+        bar_rect_bg = pg.Rect(gb.left + 6, gb.bottom - bar_height - 6, gb.width - 12, bar_height)
+        pg.draw.rect(display, (40, 40, 40), bar_rect_bg)
+        filled_rect = pg.Rect(bar_rect_bg.left, bar_rect_bg.top, int(bar_rect_bg.width * pct), bar_height)
+        pg.draw.rect(display, (100, 200, 255), filled_rect)
+
+    # draw top-bar spawn buttons
+    for btn in top_buttons:
+        btn.draw(display)
 
     # For now, draw the wire being dragged.
     if wire_start:
