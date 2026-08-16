@@ -14,7 +14,7 @@ def fuzz(x, knobs):
 
 def fuzz2(x, knobs):
     x = x * (1+knobs["gain"].value*190)
-    return x/ (1 + abs(x))
+    return x/ (1 + abs(x)) * .5
 
 env_state = {"level": 0.0}
 
@@ -86,13 +86,23 @@ def diode_clip(x, knobs):
 
     return out
 
-def pitch_shift(x, knobs):
-    print("naive")
+x1 = 0.0
+y1 = 0.0
+R = 0.995   # closer to 1 = slower / lower cutoff
 
+def pitch_shift(x, knobs):
+    global x1
+    global y1
+    global R
     reps = knobs["shift"].value
-    for i in range(int(reps)):
-        x = (abs(x)-0.25)*2.0
-    return x
+    for _ in range(int(reps)):
+        x = (abs(x) - 0.25) * 2.0
+
+    # DC blocker
+    y = x - x1 + R * y1
+    x1 = x
+    y1 = y
+    return y
 
 GRAIN_SIZE = 1024
 HISTORY_SIZE = 2048
@@ -341,20 +351,47 @@ def normalizer(x, knobs, sr=48000):
     # how many chunks fit into the window
     chunks_needed = max(1, int(round(window * float(sr) / float(chunk_len))))
 
-    # compute this chunk's peak
-    peak = float(np.max(np.abs(x))) if np.any(x) else 0.0
+    # compute this chunk's mean absolute deviation from 0 (perceived loudness proxy)
+    mean_abs = float(np.mean(np.abs(x))) if np.any(x) else 0.0
 
     hist = normalizer_state.get("history", [])
-    hist.append(peak)
+    hist.append(mean_abs)
     if len(hist) > chunks_needed:
         hist = hist[-chunks_needed:]
     normalizer_state["history"] = hist
 
-    rolling_max = max(hist) if hist else 0.0
+    # use the average of recent mean-abs values as the rolling loudness
+    rolling_level = float(np.mean(hist)) if hist else 0.0
 
-    if rolling_max < 1e-6:
+    eps = 1e-9
+    if rolling_level < eps:
+        # near silence: if user explicitly requests zero level, obey; otherwise passthrough
+        # read target level knob if present
+        target = 1.0
+        if knobs and isinstance(knobs, dict) and "level" in knobs:
+            try:
+                target = float(knobs["level"].value)
+            except Exception:
+                pass
+        if target <= 0.0:
+            return np.zeros_like(x, dtype=np.float32)
         return x.astype(np.float32)
 
-    out = x / rolling_max
+    # read target level knob (0.0..1.0), default to 1.0
+    target_level = 1.0
+    if knobs and isinstance(knobs, dict) and "level" in knobs:
+        try:
+            target_level = float(knobs["level"].value)
+        except Exception:
+            pass
+
+    # scale so the rolling mean-abs maps to the knob-specified level
+    scale = target_level / (rolling_level + eps)
+    out = x * scale
     out = np.clip(out, -1.0, 1.0)
     return out.astype(np.float32)
+
+def bitcrush(x, knobs):
+    n = int(knobs["factor"].value)
+    x = np.repeat(x[::n], n)
+    return x

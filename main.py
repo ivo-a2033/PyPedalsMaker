@@ -112,9 +112,11 @@ spawnable_defs = [
     ("PITCH_PSOLA", td_psola_pitch_shift, {"shift": (0.0, 1.0, 1.0)}),
     ("PITCH_GRAIN", better_pitch_shift, {"shift": (0.0, 1.0, 1.0)}),
     ("PITCH_SIMPLE", pitch_shift, {"shift": (0.0, 1.0, 5.0 , 1.0)}),
-    ("NORMALIZER", normalizer, {"window": (0.5, 2.0, 10.0)}),
+    ("NORMALIZER", normalizer, {"window": (0.5, 2.0, 10.0), "level": (0.0, 0.8, 1.0)}),
     ("LOWPASS", low_pass, {"cutoff": (0.0, 0.5, 1.0)}),
     ("REVERB", reverb, {"delay": (0.0, 0.0, 1.0)}),
+    ("BITCRUSH", bitcrush, {"factor": (2.0, 2.0, 64.0, 2.0)}),
+
 ]
 
 # spawn counts and top-bar buttons (max 2 per pedal type)
