@@ -83,15 +83,17 @@ def get_wav(pos, num_samples):
 
 # --- Graph ---------------------------------------------------------------
 
-generator = Generator((60, 260, 160, 120), f"OSC ({current_wav_name()})", func=get_wav)
+generator = Generator((60, 260, 250, 120), f"OSC ({current_wav_name()})", func=get_wav)
 
-pedals = [
+'''pedals = [
     Pedal((300, 60, 220, 120), "OVERDRIVE", overdrive, knobs={"gain": (0.0, 1.0, 1.0)}),
     Pedal((300, 460, 220, 120), "FUZZ", fuzz2, knobs={"gain": (0.0, 1.0, 1.0)}),
     Pedal((600, 460, 220, 120), "PITCH SHIFT", td_psola_pitch_shift, knobs={"shift": (0.0, 1.0, 1.0)}),
     Pedal((300, 260, 220, 120), "DISTORTION", distortion, knobs={"gain": (0.0, 1.0, 1.0)}),
     Pedal((600, 260, 220, 120), "FUZZ GATE", fuzz_gate, knobs={"gate_thresh": (0.01, 0.05, 0.2), "gate_speed": (0, 1, 5)}),
-]
+]'''
+
+pedals = []
 
 sink = Sink((900, 260, 140, 120), "OUT")
 
@@ -110,6 +112,7 @@ spawnable_defs = [
     ("PITCH_PSOLA", td_psola_pitch_shift, {"shift": (0.0, 1.0, 1.0)}),
     ("PITCH_GRAIN", better_pitch_shift, {"shift": (0.0, 1.0, 1.0)}),
     ("PITCH_SIMPLE", pitch_shift, {"shift": (0.0, 1.0, 5.0 , 1.0)}),
+    ("NORMALIZER", normalizer, {"window": (0.5, 2.0, 10.0)}),
     ("LOWPASS", low_pass, {"cutoff": (0.0, 0.5, 1.0)}),
     ("REVERB", reverb, {"delay": (0.0, 0.0, 1.0)}),
 ]
@@ -119,6 +122,7 @@ spawn_counts = {name: 0 for name, _, _ in spawnable_defs}
 top_buttons = []
 
 def spawn_pedal(name):
+    print("waza", name)
     # enforce max 2 per type
     if spawn_counts.get(name, 0) >= 5:
         return
@@ -189,28 +193,31 @@ def get_terminal(pos):
 
 
 def connect(a, b):
-    # We only allow OUT -> IN.
     if a.kind == "in" and b.kind == "out":
         a, b = b, a
 
     if a.kind != "out" or b.kind != "in":
         return
 
-    # Don't connect a node to itself.
     if a.owner is b.owner:
+        return
+
+    if b in a.connections:
         return
 
     a.connections.append(b)
     b.connections.append(a)
-
 
 run = True
 clock = pg.time.Clock()
 data = np.zeros(CHUNK_SIZE)
 waveform_max = 100
 
+bg = pg.transform.scale(pg.image.load("bg.png"), (1440,720)).convert()
+
 while run:
     display.fill((25, 25, 25))
+    display.blit(bg, (0,0))
 
     for e in pg.event.get():
         if e.type == pg.QUIT:
@@ -333,18 +340,37 @@ while run:
         p2 = (n,620 - int(i*waveform_max))
         pg.draw.line(display, (155,155,255), p1, p2, 2)
 
-    # freq domain draw
-    fft_output = np.fft.fft(data)
-    freqs = np.fft.fftfreq(len(data), d=1/SAMPLE_RATE)
+    # freq domain draw (contiguous bars)
+    fft_output = np.fft.rfft(data)
     magnitude = np.abs(fft_output)
-    pos_mask = freqs >= 0 # no need for neg freqs
 
-    pos_freqs = freqs[pos_mask]
-    pos_magnitude = magnitude[pos_mask]
+    num_bars = 40
+    bar_area_width = WIDTH // 2  # right half of the window (720 px)
+    bar_width = max(1, bar_area_width // num_bars)
+    bucket_size = max(1, len(magnitude) // num_bars)
 
-    for n,i in enumerate(pos_freqs):
-        pg.draw.line(display, (155,155,255), (n+720,720), (n+720,720-int(pos_magnitude[n])), 1)
+    max_mag = np.max(magnitude) if np.max(magnitude) > 0 else 1.0
 
+    for n in range(num_bars):
+        start = n * bucket_size
+        end = min(len(magnitude), start + bucket_size)
+        if start >= end:
+            peak = 0.0
+        else:
+            peak = np.max(magnitude[start:end])
+
+        # scale peak to pixel height (0..HEIGHT)
+        height = int((peak / max_mag) * HEIGHT) * .25
+
+        x = 720 + n * bar_width
+        rect = pg.Rect(x, HEIGHT - height, bar_width, height)
+        pg.draw.rect(display, (155, 155, 255), rect)
     pg.display.flip()
+    fps = clock.get_fps()
     clock.tick(120)
+    # show caption normally, but reveal FPS if it drops below 100
+    if fps < 100:
+        pg.display.set_caption(f"Pedals Maker — FPS: {fps:.1f}")
+    else:
+        pg.display.set_caption("Pedals Maker")
 pg.quit()

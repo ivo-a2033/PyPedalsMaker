@@ -3,6 +3,20 @@ import numpy as np
 import pygame as pg
 
 
+def draw_transparent_rect(surface, rect, color, alpha=160, border_color=None, border_width=1):
+    """Draw a semi-transparent rectangle onto any surface."""
+    if not isinstance(rect, pg.Rect):
+        rect = pg.Rect(rect)
+
+    overlay = pg.Surface(rect.size, pg.SRCALPHA)
+    overlay.fill((*color[:3], alpha))
+
+    if border_color is not None:
+        pg.draw.rect(overlay, (*border_color[:3], alpha), overlay.get_rect(), border_width)
+
+    surface.blit(overlay, rect.topleft)
+
+
 class Button:
     def __init__(
         self,
@@ -36,8 +50,7 @@ class Button:
 
     def draw(self, surface):
         color = self.pressed_color if self.pressed else self.color
-
-        pg.draw.rect(surface, color, self.rect)
+        draw_transparent_rect(surface, self.rect, color, alpha=150, border_color=(180, 180, 180), border_width=1)
 
         if self.label:
             text = self.font.render(self.label, True, (255, 255, 255))
@@ -261,8 +274,7 @@ class Generator(GraphNode):
         return data
 
     def draw(self, surface):
-        pg.draw.rect(surface, (50, 50, 50), self.rect)
-        pg.draw.rect(surface, (120, 120, 120), self.rect, 2)
+        draw_transparent_rect(surface, self.rect, (50, 50, 50), alpha=140, border_color=(120, 120, 120), border_width=2)
 
         self.draw_label_and_terminals(surface)
         self.on_button.draw(surface)
@@ -357,8 +369,7 @@ class Pedal(GraphNode):
         return data
 
     def draw(self, surface):
-        pg.draw.rect(surface, (50, 50, 50), self.rect)
-        pg.draw.rect(surface, (120, 120, 120), self.rect, 2)
+        draw_transparent_rect(surface, self.rect, (50, 50, 50), alpha=140, border_color=(120, 120, 120), border_width=2)
 
         self.draw_label_and_terminals(surface)
         self.on_button.draw(surface)
@@ -386,6 +397,5 @@ class Sink(GraphNode):
         self.handle_drag(event)
 
     def draw(self, surface):
-        pg.draw.rect(surface, (45, 45, 60), self.rect)
-        pg.draw.rect(surface, (140, 140, 180), self.rect, 2)
+        draw_transparent_rect(surface, self.rect, (45, 45, 60), alpha=150, border_color=(140, 140, 180), border_width=2)
         self.draw_label_and_terminals(surface)

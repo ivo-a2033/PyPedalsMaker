@@ -87,6 +87,8 @@ def diode_clip(x, knobs):
     return out
 
 def pitch_shift(x, knobs):
+    print("naive")
+
     reps = knobs["shift"].value
     for i in range(int(reps)):
         x = (abs(x)-0.25)*2.0
@@ -97,6 +99,8 @@ HISTORY_SIZE = 2048
 pitch_history = np.zeros(HISTORY_SIZE, dtype=np.float32)
 
 def better_pitch_shift(data, knobs):
+    print("grain")
+
     global pitch_history
 
     ratio = 0.5 + knobs["shift"].value * 1.5  # 0.5x (down) to 2x (up)
@@ -200,6 +204,7 @@ def estimate_pitch_period(buf, sr, fmin=70, fmax=800): # helper function to psol
 
 
 def td_psola_pitch_shift(data, knobs, sr=48000):
+    print("psola")
     global psola_history
 
     ratio = 0.5 + knobs["shift"].value * 1.5  # 0.5x (down) to 2x (up)
@@ -298,3 +303,58 @@ def reverb(x, knobs):
     reverb_state["filled"] = min(MAX_REVERB_DELAY, filled + len(x))
 
     return np.clip(out, -1.0, 1.0)
+
+
+# --- Normalizer pedal ---------------------------------------------------
+# Keeps a rolling record of recent chunk peaks (few seconds) and scales
+# the current chunk by the rolling max so output stays in -1..1 even after
+# aggressive gain/fuzz. The knob `window` controls how many seconds to
+# look back for the rolling max.
+normalizer_state = {"history": [], "window_secs": 2.0}
+
+
+def normalizer(x, knobs, sr=48000):
+    """Normalize `x` by the rolling max over the last `window` seconds.
+
+    knobs['window'].value expected in seconds (0.5..10 by default).
+    This stores one peak value per chunk and uses the maximum of the
+    recent peaks as the normalizer denominator. If the rolling max is
+    near zero the function is a no-op.
+    """
+    global normalizer_state
+
+    if x is None or len(x) == 0:
+        return x
+
+    # read knob or fallback
+    window = normalizer_state.get("window_secs", 2.0)
+    if knobs and isinstance(knobs, dict) and "window" in knobs:
+        try:
+            window = float(knobs["window"].value)
+        except Exception:
+            pass
+
+    chunk_len = len(x)
+    if chunk_len <= 0:
+        return x
+
+    # how many chunks fit into the window
+    chunks_needed = max(1, int(round(window * float(sr) / float(chunk_len))))
+
+    # compute this chunk's peak
+    peak = float(np.max(np.abs(x))) if np.any(x) else 0.0
+
+    hist = normalizer_state.get("history", [])
+    hist.append(peak)
+    if len(hist) > chunks_needed:
+        hist = hist[-chunks_needed:]
+    normalizer_state["history"] = hist
+
+    rolling_max = max(hist) if hist else 0.0
+
+    if rolling_max < 1e-6:
+        return x.astype(np.float32)
+
+    out = x / rolling_max
+    out = np.clip(out, -1.0, 1.0)
+    return out.astype(np.float32)
