@@ -181,7 +181,20 @@ def generate_next_audio_chunk():
     return pg.sndarray.make_sound(audio_array), data
 
 wire_start = None
-cut_pos = None
+cut_start = None
+cut_end = None
+
+
+def segments_intersect(a1, a2, b1, b2):
+    def cross(o, a, b):
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+
+    o1 = cross(a1, a2, b1)
+    o2 = cross(a1, a2, b2)
+    o3 = cross(b1, b2, a1)
+    o4 = cross(b1, b2, a2)
+
+    return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
 
 
 def get_terminal(pos):
@@ -241,29 +254,25 @@ while run:
                 wire_start = None
 
         if e.type == pg.MOUSEBUTTONDOWN and e.button == 3:
-            cut_pos = e.pos
+            cut_start = pg.Vector2(e.pos)
+            cut_end = pg.Vector2(e.pos)
 
         elif e.type == pg.MOUSEBUTTONUP and e.button == 3:
-            cut_pos = None
+            cut_start = None
+            cut_end = None
 
-        elif e.type == pg.MOUSEMOTION and cut_pos:
-            p1, p2 = pg.Vector2(cut_pos), pg.Vector2(e.pos)
+        elif e.type == pg.MOUSEMOTION and cut_start is not None:
+            cut_end = pg.Vector2(e.pos)
+            p1, p2 = cut_start, cut_end
 
             for node in nodes:
                 if node.out_terminal:
                     for other in list(node.out_terminal.connections):
-                        p3, p4 = node.out_terminal.pos, other.pos
-
-                        d1 = (p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)
-                        d2 = (p4.x - p3.x) * (p2.y - p3.y) - (p4.y - p3.y) * (p2.x - p3.x)
-                        d3 = (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
-                        d4 = (p2.x - p1.x) * (p4.y - p1.y) - (p2.y - p1.y) * (p4.x - p1.x)
-
-                        if d1 * d2 < 0 and d3 * d4 < 0:
-                            node.out_terminal.connections.remove(other)
-                            other.connections.remove(node.out_terminal)
-
-            cut_pos = e.pos
+                        p3, p4 = pg.Vector2(node.out_terminal.pos), pg.Vector2(other.pos)
+                        if segments_intersect(p1, p2, p3, p4):
+                            if other in node.out_terminal.connections:
+                                node.out_terminal.connections.remove(other)
+                                other.connections.remove(node.out_terminal)
 
         # cycle WAV when clicking the OSC area (left click release)
         if e.type == pg.MOUSEBUTTONUP and e.button == 1:
@@ -325,6 +334,15 @@ while run:
             3,
         )
 
+    if cut_start is not None and cut_end is not None:
+        pg.draw.line(
+            display,
+            (220, 120, 120),
+            cut_start,
+            cut_end,
+            3,
+        )
+
     for node in nodes:
         if node.out_terminal:
             for other in node.out_terminal.connections:
@@ -371,7 +389,7 @@ while run:
     fps = clock.get_fps()
     clock.tick(120)
     # show caption normally, but reveal FPS if it drops below 100
-    if fps < 100:
+    if fps < 50:
         pg.display.set_caption(f"Pedals Maker — FPS: {fps:.1f}")
     else:
         pg.display.set_caption("Pedals Maker")
