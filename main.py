@@ -3,6 +3,8 @@ import numpy as np
 from scipy.io import wavfile
 import glob
 import os
+import threading
+import time
 
 from UI import Generator, Pedal, Sink
 from pedal_functions import *
@@ -100,6 +102,17 @@ sink = Sink((900, 260, 140, 120), "OUT")
 # Everything that needs events/drawing/terminal lookups, source to sink.
 nodes = [generator, sink]
 
+# --- Threading / graph-safety --------------------------------------------
+# The audio thread walks `nodes`/`pedals` and each terminal's `.connections`
+# list via sink.get_data(). The main thread mutates those same structures
+# in response to mouse events (wiring, cutting, spawning pedals). This lock
+# guards both sides so the audio thread never sees a graph mid-mutation.
+graph_lock = threading.Lock()
+
+# Holder for the most recently generated chunk, so the render loop can draw
+# the waveform/FFT without touching the mixer itself.
+latest_data = [np.zeros(CHUNK_SIZE, dtype=np.float32)]
+
 # --- Spawnable pedals -------------------------------------------------
 # list of (display name, function, knobs mapping or None)
 spawnable_defs = [
@@ -116,6 +129,7 @@ spawnable_defs = [
     ("LOWPASS", low_pass, {"cutoff": (0.0, 0.5, 1.0)}),
     ("REVERB", reverb, {"delay": (0.0, 0.0, 1.0)}),
     ("BITCRUSH", bitcrush, {"factor": (2.0, 2.0, 64.0, 2.0)}),
+    ("FFT PITCH SHIFT", fft_pitch_shift, {"factor": (1.0, 2.0, 4.0, 0.1)}),
 
 ]
 
@@ -139,13 +153,14 @@ def spawn_pedal(name):
             new_p = Pedal((x, y, 220, 120), name, func, knobs=knobs)
 
             # add to pedals and nodes (before sink)
-            pedals.append(new_p)
-            # insert before sink so sink stays last
-            try:
-                sink_index = nodes.index(sink)
-                nodes.insert(sink_index, new_p)
-            except ValueError:
-                nodes.append(new_p)
+            with graph_lock:
+                pedals.append(new_p)
+                # insert before sink so sink stays last
+                try:
+                    sink_index = nodes.index(sink)
+                    nodes.insert(sink_index, new_p)
+                except ValueError:
+                    nodes.append(new_p)
 
             spawn_counts[name] = spawn_counts.get(name, 0) + 1
             # update button label to show count
@@ -168,9 +183,10 @@ for i, (name, _, _) in enumerate(spawnable_defs):
     top_buttons.append(btn)
 
 def generate_next_audio_chunk():
-    data = sink.get_data(CHUNK_SIZE)
+    with graph_lock:
+        data = sink.get_data(CHUNK_SIZE)
     data = np.clip(data, -1.0, 1.0)
-    
+
     mono = (data * 32767).astype(np.int16)
     _, _, mixer_channels = pg.mixer.get_init()
     if mixer_channels == 2:
@@ -220,8 +236,9 @@ def connect(a, b):
     if b in a.connections:
         return
 
-    a.connections.append(b)
-    b.connections.append(a)
+    with graph_lock:
+        a.connections.append(b)
+        b.connections.append(a)
 
 run = True
 clock = pg.time.Clock()
@@ -229,6 +246,25 @@ data = np.zeros(CHUNK_SIZE)
 waveform_max = 100
 
 bg = pg.transform.scale(pg.image.load("bg.png"), (1440,720)).convert()
+
+
+# --- Audio thread ----------------------------------------------------------
+# Runs independently of the render loop's clock, so a slower/uncapped frame
+# rate on the main thread no longer starves the mixer channel.
+def audio_thread_func():
+    while run:
+        if not audio_channel.get_queue():
+            chunk, chunk_data = generate_next_audio_chunk()
+            latest_data[0] = chunk_data
+            if not audio_channel.get_busy():
+                audio_channel.play(chunk)
+            else:
+                audio_channel.queue(chunk)
+        else:
+            time.sleep(0.001)
+
+audio_thread = threading.Thread(target=audio_thread_func, daemon=True)
+audio_thread.start()
 
 while run:
     display.fill((25, 25, 25))
@@ -270,9 +306,10 @@ while run:
                     for other in list(node.out_terminal.connections):
                         p3, p4 = pg.Vector2(node.out_terminal.pos), pg.Vector2(other.pos)
                         if segments_intersect(p1, p2, p3, p4):
-                            if other in node.out_terminal.connections:
-                                node.out_terminal.connections.remove(other)
-                                other.connections.remove(node.out_terminal)
+                            with graph_lock:
+                                if other in node.out_terminal.connections:
+                                    node.out_terminal.connections.remove(other)
+                                    other.connections.remove(node.out_terminal)
 
         # cycle WAV when clicking the OSC area (left click release)
         if e.type == pg.MOUSEBUTTONUP and e.button == 1:
@@ -293,12 +330,9 @@ while run:
         for node in nodes:
             node.update(e)
 
-    if not audio_channel.get_queue():
-        chunk, data = generate_next_audio_chunk()
-        if not audio_channel.get_busy():
-            audio_channel.play(chunk)
-        else:
-            audio_channel.queue(chunk)
+    # audio generation now happens on audio_thread_func in the background;
+    # just pull the latest chunk for visualization.
+    data = latest_data[0]
 
     for node in nodes:
         node.draw(display)
@@ -387,10 +421,12 @@ while run:
         pg.draw.rect(display, (155, 155, 255), rect)
     pg.display.flip()
     fps = clock.get_fps()
-    clock.tick(120)
+    clock.tick(60)
     # show caption normally, but reveal FPS if it drops below 100
     if fps < 50:
         pg.display.set_caption(f"Pedals Maker — FPS: {fps:.1f}")
     else:
         pg.display.set_caption("Pedals Maker")
+
+audio_thread.join(timeout=1.0)
 pg.quit()

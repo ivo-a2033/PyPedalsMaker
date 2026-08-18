@@ -207,7 +207,7 @@ def estimate_pitch_period(buf, sr, fmin=70, fmax=800): # helper function to psol
     peak_idx = int(np.argmax(window))
     peak_val = window[peak_idx]
 
-    if peak_val < 0.3:
+    if peak_val < 0.1:
         return None  # too noisy/inharmonic to trust (e.g. after heavy distortion)
 
     return min_lag + peak_idx
@@ -395,3 +395,69 @@ def bitcrush(x, knobs):
     n = int(knobs["factor"].value)
     x = np.repeat(x[::n], n)
     return x
+
+import numpy as np
+from scipy.signal.windows import tukey
+
+buffer = np.zeros(2048)
+ola = np.zeros(2048)
+counter = 0
+
+def fft_pitch_shift(x, knobs):
+    global buffer, ola, counter
+
+    n = float(knobs["factor"].value)
+    factor = 2.0 ** n
+
+    hop = len(x) * 2
+    frame_size = len(buffer)
+
+    # Add input to rolling buffer
+    buffer[:-len(x)] = buffer[len(x):]
+    buffer[-len(x):] = x
+
+    counter += len(x)
+
+    if counter >= hop:
+        counter -= hop
+
+        # Less aggressive than Hann
+        window = tukey(frame_size, alpha=0.25)
+
+        spectrum = np.fft.rfft(buffer * window)
+
+        # Move frequency bins by `factor`
+        shifted = np.zeros_like(spectrum)
+
+        src = np.arange(len(spectrum))
+        dst = src * factor
+
+        valid = dst < len(shifted) - 1
+
+        src = src[valid]
+        dst = dst[valid]
+
+        # Linear interpolation between destination bins
+        lo = np.floor(dst).astype(int)
+        hi = lo + 1
+        frac = dst - lo
+
+        shifted[lo] += spectrum[src] * (1.0 - frac)
+        shifted[hi] += spectrum[src] * frac
+
+        frame = np.fft.irfft(shifted, n=frame_size)
+
+        # Synthesis window
+        frame *= window
+
+        # Overlap-add
+        ola += frame
+
+    # Emit exactly the input chunk size
+    out = ola[:len(x)].copy()
+
+    # Advance OLA buffer
+    ola[:-len(x)] = ola[len(x):]
+    ola[-len(x):] = 0.0
+
+    return out
