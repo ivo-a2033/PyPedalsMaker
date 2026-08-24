@@ -248,6 +248,10 @@ class Generator(GraphNode):
 
     def toggle(self):
         self.enabled = not self.enabled
+        if self.enabled and self.func:
+            reset = getattr(self.func, "reset", None)
+            if reset:
+                reset()
 
     def _update_control_positions(self):
         self.on_button.rect.topleft = (
@@ -307,6 +311,10 @@ class Pedal(GraphNode):
         self.func = func
         self.enabled = True
 
+        reset = getattr(self.func, "reset", None)
+        if reset:
+            reset()
+
         self.on_button = Button(
             (0, 0, 50, 30),
             self.toggle,
@@ -340,6 +348,10 @@ class Pedal(GraphNode):
 
     def toggle(self):
         self.enabled = not self.enabled
+        if self.enabled:
+            reset = getattr(self.func, "reset", None)
+            if reset:
+                reset()
 
     def _update_control_positions(self):
         self.on_button.rect.topleft = (

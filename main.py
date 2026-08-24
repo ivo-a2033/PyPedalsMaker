@@ -131,6 +131,8 @@ spawnable_defs = [
     ("BITCRUSH", bitcrush, {"factor": (2.0, 2.0, 64.0, 2.0)}),
     ("FFT PITCH SHIFT", fft_pitch_shift, {"factor": (1.0, 2.0, 4.0, 0.1)}),
 
+    ("LOOP", loop, {"length": (0.0, 0.5, 1.0)}),
+    ("MIX", mix, {"frequency": (0.0, 0.5, 1.0), "bias": (0.0, 0.0, 1.0)}),
 ]
 
 # spawn counts and top-bar buttons (max 2 per pedal type)

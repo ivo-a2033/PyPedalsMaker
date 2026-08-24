@@ -1,5 +1,60 @@
 import numpy as np
 
+LOOP_SAMPLE_RATE = 48000
+LOOP_BUFFER = np.zeros(LOOP_SAMPLE_RATE, dtype=np.float32)
+loop_buffer_pos = 0
+loop_play_pos = 0
+loop_recording = True
+loop_done = False
+
+def reset_loop():
+    global loop_buffer_pos, loop_play_pos, loop_recording, loop_done
+
+    LOOP_BUFFER.fill(0.0)
+    loop_buffer_pos = 0
+    loop_play_pos = 0
+    loop_recording = True
+    loop_done = False
+
+def loop(data, knobs):
+    global loop_buffer_pos, loop_play_pos, loop_recording, loop_done
+
+    if loop_recording:
+        end = min(loop_buffer_pos + len(data), len(LOOP_BUFFER))
+        captured = end - loop_buffer_pos
+        LOOP_BUFFER[loop_buffer_pos:end] = data[:captured]
+        output = np.empty(len(data), dtype=np.float32)
+        output[:captured] = data[:captured]
+        loop_buffer_pos = end
+
+        if loop_buffer_pos >= len(LOOP_BUFFER):
+            loop_recording = False
+            loop_done = True
+            loop_play_pos = 0
+
+        if captured < len(data):
+            output[captured:] = loop(data[captured:], knobs)
+
+    loop_length = int(knobs["length"].value * LOOP_SAMPLE_RATE)
+    loop_length = max(1, min(len(LOOP_BUFFER), loop_length))
+    positions = (loop_play_pos + np.arange(len(data))) % loop_length
+    loop_play_pos = (loop_play_pos + len(data)) % loop_length
+    return LOOP_BUFFER[positions]
+
+loop.reset = reset_loop
+
+mix_phase = 0
+
+def mix(data, knobs):
+    global mix_phase
+
+    frequency = knobs["frequency"].value * 1000.0
+    bias = knobs["bias"].value
+    positions = mix_phase + np.arange(len(data))
+    carrier = np.sin(2.0 * np.pi * frequency * positions / LOOP_SAMPLE_RATE) + bias
+    mix_phase += len(data)
+    return (data * carrier).astype(np.float32)
+
 def distortion(data, knobs):
     data = data * (1+knobs["gain"].value*90)
     return np.clip(data, -1, 1) 
