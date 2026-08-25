@@ -133,6 +133,7 @@ spawnable_defs = [
 
     ("LOOP", loop, {"length": (0.0, 0.5, 1.0)}),
     ("MIX", mix, {"frequency": (0.0, 0.5, 1.0), "bias": (0.0, 0.0, 1.0)}),
+    ("DUMB SHIFTER", dumb_shifter, {"shift": (0.1, 1.0, 2.0, 0.1)}),
 ]
 
 # spawn counts and top-bar buttons (max 2 per pedal type)

@@ -55,6 +55,29 @@ def mix(data, knobs):
     mix_phase += len(data)
     return (data * carrier).astype(np.float32)
 
+dumb_shifter_previous_sample = 0.0
+
+def dumb_shifter(data, knobs):
+    global dumb_shifter_previous_sample
+
+    ratio = knobs["shift"].value
+    output_length = max(1, int(len(data) / ratio))
+    source_positions = np.arange(output_length) * ratio
+    source = np.arange(len(data))
+    stretched = np.interp(source_positions, source, data)
+
+    output = np.zeros(len(data), dtype=np.float32)
+    output[:min(len(output), len(stretched))] = stretched[:len(output)]
+
+    fade_length = min(32, len(output))
+    fade = np.linspace(0.0, 1.0, fade_length, dtype=np.float32)
+    output[:fade_length] = (
+        dumb_shifter_previous_sample * (1.0 - fade)
+        + output[:fade_length] * fade
+    )
+    dumb_shifter_previous_sample = float(output[-1])
+    return output
+
 def distortion(data, knobs):
     data = data * (1+knobs["gain"].value*90)
     return np.clip(data, -1, 1) 
